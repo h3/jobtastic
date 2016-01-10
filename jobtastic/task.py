@@ -39,12 +39,14 @@ except ImportError:
         # We should really have an explicitly-defined way of doing this, but
         # for now, let's just use werkzeug Memcached if it exists
         from werkzeug.contrib.cache import MemcachedCache
+        from celery.app import app_or_default
 
-        from celery import conf
-        if conf.CELERY_RESULT_BACKEND == 'cache':
-            uri_str = conf.CELERY_CACHE_BACKEND.strip('memcached://')
+        app = app_or_default()
+
+        if app.conf.CELERY_RESULT_BACKEND == 'cache':
+            uri_str = app.conf.CELERY_CACHE_BACKEND.strip('memcached://')
             uris = uri_str.split(';')
-            cache = MemcachedCache(uris)
+            cache = MemcachedCache(servers=uris)
             HAS_WERKZEUG = True
     except ImportError:
         pass
@@ -70,20 +72,23 @@ def acquire_lock(lock_name):
     """
     for _ in range(10):
         try:
-            value = cache.incr(lock_name)
-        except ValueError:
-            cache.set(lock_name, 0)
-            value = cache.incr(lock_name)
+            value = cache.get(lock_name) + 1
+            cache.set(lock_name, value)
+        except TypeError:
+            cache.set(lock_name, 1)
+            value = 1
         if value == 1:
             break
         else:
-            cache.decr(lock_name)
+            value = cache.get(lock_name)
+            cache.set(lock_name, value - 1)
     else:
         yield
         cache.set(lock_name, 0)
         return
     yield
-    cache.decr(lock_name)
+    value = cache.get(lock_name)
+    cache.set(lock_name, value - 1)
 
 
 class JobtasticTask(Task):
